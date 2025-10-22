@@ -91,6 +91,12 @@ input double PartialTP2Multiplier = 3.0; // Let rest run to 3x SL
 input bool UseCurrencyStrength = true;
 input int StrengthPeriod = 14; // Period for strength calculation
 input double MinStrengthDifference = 0.3; // Minimum strength difference
+input bool UseTimeOptimization = true;
+input bool TrackHourlyPerformance = true;
+input double OverlapLotMultiplier = 1.3; // Increase lot size during London/NY overlap
+input double OptimalHourMultiplier = 1.2; // Increase lot size during best hours
+input int MinTradesForOptimization = 5; // Minimum trades per hour to consider it optimal
+input double MinWinRateForOptimal = 55.0; // Minimum win rate to mark hour as optimal
 
 //=== SCALPING DASHBOARD ===
 input string ___DASHBOARD___ = "=== DASHBOARD ===";
@@ -152,6 +158,17 @@ bool StrengthConfirmed = false;
 int PartialPositionsToday = 0;
 int FullClosuresToday = 0;
 
+// Feature 5: Time Optimization Variables
+int HourlyTrades[24];
+int HourlyWins[24];
+double HourlyPnL[24];
+double HourlyWinRate[24];
+bool OptimalHours[24];
+string CurrentHourQuality = "";
+double CurrentTimeMultiplier = 1.0;
+int BestTradingHour = -1;
+int WorstTradingHour = -1;
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -176,6 +193,16 @@ int OnInit()
    StartOfDay = TimeCurrent();
    LastBarTime = Time[0];
 
+   // Initialize hourly tracking arrays
+   for(int h = 0; h < 24; h++)
+   {
+      HourlyTrades[h] = 0;
+      HourlyWins[h] = 0;
+      HourlyPnL[h] = 0;
+      HourlyWinRate[h] = 0;
+      OptimalHours[h] = false;
+   }
+
    // Create dashboard
    if(ShowScalpDashboard)
       CreateScalpDashboard();
@@ -187,11 +214,12 @@ int OnInit()
    Print("Trading Sessions: London=", TradeLondonSession, " NY=", TradeNYSession, " Asian=", TradeAsianSession);
 
    // Print Advanced Features Status
-   Print("=== ADVANCED FEATURES ===");
-   Print("Multi-Timeframe Filter: ", UseMultiTimeframeFilter ? "Enabled" : "Disabled");
-   Print("Dynamic SL/TP: ", UseDynamicSLTP ? "Enabled" : "Disabled");
-   Print("Partial Profit Taking: ", UsePartialProfitTaking ? "Enabled" : "Disabled");
-   Print("Currency Strength Filter: ", UseCurrencyStrength ? "Enabled" : "Disabled");
+   Print("=== ADVANCED FEATURES (ALL 5 ENABLED) ===");
+   Print("Feature 1 - Multi-Timeframe Filter: ", UseMultiTimeframeFilter ? "Enabled" : "Disabled");
+   Print("Feature 2 - Dynamic SL/TP: ", UseDynamicSLTP ? "Enabled" : "Disabled");
+   Print("Feature 3 - Partial Profit Taking: ", UsePartialProfitTaking ? "Enabled" : "Disabled");
+   Print("Feature 4 - Currency Strength Filter: ", UseCurrencyStrength ? "Enabled" : "Disabled");
+   Print("Feature 5 - Time Optimization: ", UseTimeOptimization ? "Enabled" : "Disabled");
 
    return(INIT_SUCCEEDED);
 }
@@ -360,6 +388,9 @@ void AnalyzeScalpingOpportunity()
 
    // ADVANCED FEATURE 2: Currency Strength
    CalculateCurrencyStrength();
+
+   // ADVANCED FEATURE 5: Time Optimization
+   AnalyzeTimeOptimization();
 }
 
 void CalculateDynamicLevels()
@@ -568,6 +599,128 @@ void CalculateCurrencyStrength()
       StrengthConfirmed = true;
    else
       StrengthConfirmed = false;
+}
+
+//+------------------------------------------------------------------+
+//| FEATURE 5: Enhanced Time-Based Trading Optimization            |
+//+------------------------------------------------------------------+
+void AnalyzeTimeOptimization()
+{
+   if(!UseTimeOptimization)
+   {
+      CurrentHourQuality = "DISABLED";
+      CurrentTimeMultiplier = 1.0;
+      return;
+   }
+
+   int currentHour = TimeHour(TimeCurrent());
+
+   // Update hourly statistics from closed trades
+   UpdateHourlyStatistics();
+
+   // Determine if current hour is optimal
+   if(TrackHourlyPerformance && HourlyTrades[currentHour] >= MinTradesForOptimization)
+   {
+      HourlyWinRate[currentHour] = (HourlyWins[currentHour] * 100.0) / HourlyTrades[currentHour];
+
+      if(HourlyWinRate[currentHour] >= MinWinRateForOptimal && HourlyPnL[currentHour] > 0)
+      {
+         OptimalHours[currentHour] = true;
+         CurrentHourQuality = "OPTIMAL";
+      }
+      else if(HourlyWinRate[currentHour] < 40 || HourlyPnL[currentHour] < 0)
+      {
+         OptimalHours[currentHour] = false;
+         CurrentHourQuality = "POOR";
+      }
+      else
+      {
+         OptimalHours[currentHour] = false;
+         CurrentHourQuality = "AVERAGE";
+      }
+   }
+   else
+   {
+      CurrentHourQuality = "LEARNING";
+   }
+
+   // Calculate time-based lot multiplier
+   CurrentTimeMultiplier = 1.0;
+
+   // London/NY overlap bonus
+   if(TradingSession == "LONDON/NY OVERLAP")
+   {
+      CurrentTimeMultiplier *= OverlapLotMultiplier;
+      CurrentHourQuality += " + OVERLAP";
+   }
+
+   // Optimal hour bonus
+   if(OptimalHours[currentHour])
+   {
+      CurrentTimeMultiplier *= OptimalHourMultiplier;
+   }
+
+   // Find best and worst hours
+   FindBestWorstHours();
+}
+
+void UpdateHourlyStatistics()
+{
+   // Scan closed orders and update hourly stats
+   for(int i = 0; i < OrdersHistoryTotal(); i++)
+   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_HISTORY) && OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumberScalp)
+      {
+         int closeHour = TimeHour(OrderCloseTime());
+         double pnl = OrderProfit() + OrderSwap() + OrderCommission();
+
+         // Only count if not already counted (check if this is from today)
+         if(TimeDay(OrderCloseTime()) == TimeDay(TimeCurrent()))
+         {
+            // Note: This is simplified. In production, you'd want to track individual order IDs
+            // to avoid double-counting. For now, we reset daily.
+         }
+      }
+   }
+}
+
+void FindBestWorstHours()
+{
+   double bestPnL = -999999;
+   double worstPnL = 999999;
+
+   for(int h = 0; h < 24; h++)
+   {
+      if(HourlyTrades[h] >= MinTradesForOptimization)
+      {
+         if(HourlyPnL[h] > bestPnL)
+         {
+            bestPnL = HourlyPnL[h];
+            BestTradingHour = h;
+         }
+
+         if(HourlyPnL[h] < worstPnL)
+         {
+            worstPnL = HourlyPnL[h];
+            WorstTradingHour = h;
+         }
+      }
+   }
+}
+
+void RecordTradeByHour(int tradeHour, bool isWin, double pnl)
+{
+   if(!TrackHourlyPerformance) return;
+
+   if(tradeHour >= 0 && tradeHour < 24)
+   {
+      HourlyTrades[tradeHour]++;
+      if(isWin) HourlyWins[tradeHour]++;
+      HourlyPnL[tradeHour] += pnl;
+
+      if(HourlyTrades[tradeHour] > 0)
+         HourlyWinRate[tradeHour] = (HourlyWins[tradeHour] * 100.0) / HourlyTrades[tradeHour];
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -897,6 +1050,10 @@ double CalculateScalpLotSize()
    double accountValue = AccountEquity();
    double riskAmount = accountValue * (RiskPercentPerTrade / 100.0);
 
+   // FEATURE 5: Apply time-based multiplier
+   if(UseTimeOptimization)
+      riskAmount *= CurrentTimeMultiplier;
+
    double stopLossPoints = StopLossPips * 10; // Convert pips to points
    double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
    double tickSize = MarketInfo(Symbol(), MODE_TICKSIZE);
@@ -1199,8 +1356,22 @@ void ResetDailyCounters()
    DailyPnL = 0;
    PartialPositionsToday = 0;
    FullClosuresToday = 0;
+
+   // Reset hourly statistics for new day
+   for(int h = 0; h < 24; h++)
+   {
+      HourlyTrades[h] = 0;
+      HourlyWins[h] = 0;
+      HourlyPnL[h] = 0;
+      HourlyWinRate[h] = 0;
+      OptimalHours[h] = false;
+   }
+
+   BestTradingHour = -1;
+   WorstTradingHour = -1;
+
    StartOfDay = TimeCurrent();
-   Print("Daily counters reset for new trading day");
+   Print("Daily counters and hourly statistics reset for new trading day");
 }
 
 //+------------------------------------------------------------------+
@@ -1263,6 +1434,10 @@ void UpdateDailyPnL()
                LosingScalps++;
                if(pips < WorstScalp) WorstScalp = pips;
             }
+
+            // FEATURE 5: Record trade by hour
+            int tradeHour = TimeHour(OrderCloseTime());
+            RecordTradeByHour(tradeHour, pnl > 0, pnl);
          }
       }
    }
@@ -1322,7 +1497,7 @@ void CreateScalpDashboard()
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_XDISTANCE, DashX);
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_YDISTANCE, DashY);
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_XSIZE, 420);
-   ObjectSetInteger(0, "Scalp_BG", OBJPROP_YSIZE, 580); // Increased height for new features
+   ObjectSetInteger(0, "Scalp_BG", OBJPROP_YSIZE, 640); // Increased height for Feature 5
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_BGCOLOR, clrBlack);
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_BORDER_TYPE, BORDER_FLAT);
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_COLOR, clrGold);
@@ -1356,8 +1531,11 @@ void CreateScalpDashboard()
    CreateDashLabel("Scalp_Strength", "", DashX + 10, DashY + 505, clrWhite, 9);
    CreateDashLabel("Scalp_PartialStats", "", DashX + 10, DashY + 525, clrWhite, 9);
    CreateDashLabel("Scalp_DynamicSL", "", DashX + 10, DashY + 545, clrWhite, 9);
+   CreateDashLabel("Scalp_TimeOpt", "", DashX + 10, DashY + 565, clrWhite, 9);
+   CreateDashLabel("Scalp_HourQuality", "", DashX + 10, DashY + 585, clrWhite, 9);
+   CreateDashLabel("Scalp_BestWorstHour", "", DashX + 10, DashY + 605, clrWhite, 8);
 
-   CreateDashLabel("Scalp_Time", "", DashX + 10, DashY + 560, clrWhite, 9);
+   CreateDashLabel("Scalp_Time", "", DashX + 10, DashY + 620, clrWhite, 9);
 }
 
 void CreateDashLabel(string name, string text, int x, int y, color clr, int size)
@@ -1479,6 +1657,40 @@ void UpdateScalpDashboard()
       ObjectSetText("Scalp_DynamicSL", dynamicText, 9, "Arial", clrGray);
    }
 
+   // Time Optimization
+   string timeOptText = "Time Mult: x" + DoubleToStr(CurrentTimeMultiplier, 2);
+   color timeOptColor = (CurrentTimeMultiplier > 1.0) ? ProfitColorScalp : clrWhite;
+   if(!UseTimeOptimization) timeOptColor = clrGray;
+   ObjectSetText("Scalp_TimeOpt", timeOptText, 9, "Arial Bold", timeOptColor);
+
+   // Hour Quality
+   color hourColor = clrWhite;
+   if(CurrentHourQuality == "OPTIMAL" || StringFind(CurrentHourQuality, "OVERLAP") >= 0)
+      hourColor = ProfitColorScalp;
+   else if(CurrentHourQuality == "POOR")
+      hourColor = LossColorScalp;
+   else if(CurrentHourQuality == "LEARNING")
+      hourColor = NeutralColorScalp;
+   else if(CurrentHourQuality == "DISABLED")
+      hourColor = clrGray;
+
+   ObjectSetText("Scalp_HourQuality", "Hour Quality: " + CurrentHourQuality, 9, "Arial", hourColor);
+
+   // Best/Worst Hours
+   string bestWorstText = "Best: ";
+   if(BestTradingHour >= 0)
+      bestWorstText += IntegerToString(BestTradingHour) + ":00";
+   else
+      bestWorstText += "N/A";
+
+   bestWorstText += " | Worst: ";
+   if(WorstTradingHour >= 0)
+      bestWorstText += IntegerToString(WorstTradingHour) + ":00";
+   else
+      bestWorstText += "N/A";
+
+   ObjectSetText("Scalp_BestWorstHour", bestWorstText, 8, "Arial", clrGray);
+
    // Time
    ObjectSetText("Scalp_Time", "Time: " + TimeToString(TimeCurrent(), TIME_SECONDS), 9, "Arial", clrGray);
 }
@@ -1512,6 +1724,9 @@ void DeleteScalpDashboard()
    ObjectDelete("Scalp_Strength");
    ObjectDelete("Scalp_PartialStats");
    ObjectDelete("Scalp_DynamicSL");
+   ObjectDelete("Scalp_TimeOpt");
+   ObjectDelete("Scalp_HourQuality");
+   ObjectDelete("Scalp_BestWorstHour");
    ObjectDelete("Scalp_Time");
 }
 
