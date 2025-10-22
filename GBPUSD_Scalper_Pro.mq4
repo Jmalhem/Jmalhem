@@ -27,8 +27,6 @@ input double MinATRPips = 5.0; // Minimum ATR for entry
 input double MaxATRPips = 30.0; // Maximum ATR for entry
 input bool UseOrderFlow = true;
 input int OrderFlowPeriod = 10;
-input bool AvoidHighImpactNews = true;
-input int NewsAvoidanceMinutes = 30;
 
 //=== TRADING SESSIONS ===
 input string ___SESSIONS___ = "=== SESSION FILTERS ===";
@@ -60,13 +58,10 @@ input int ATR_Period = 14;
 //=== SCALPING RISK MANAGEMENT ===
 input string ___RISK___ = "=== RISK MANAGEMENT ===";
 input double RiskPercentPerTrade = 0.5; // Small risk per scalp
-input double MinRewardRiskRatio = 1.5;
-input double MaxRewardRiskRatio = 3.0;
 input int StopLossPips = 8; // Tight stop loss for scalping
 input int TakeProfitPips = 12; // Quick profit target
 input bool UseTrailingStop = true;
 input int TrailingStopPips = 5;
-input int TrailingStepPips = 2;
 input bool UseBreakEven = true;
 input int BreakEvenPips = 5;
 input int BreakEvenPlusPips = 1;
@@ -74,7 +69,6 @@ input int BreakEvenPlusPips = 1;
 //=== POSITION MANAGEMENT ===
 input string ___POSITION___ = "=== POSITION MANAGEMENT ===";
 input int MaxConcurrentPositions = 1; // One scalp at a time
-input bool AllowHedging = false;
 input double MaxDailyLossPercent = 3.0;
 input double MaxDailyProfitPercent = 5.0; // Take profit and stop for the day
 input int MagicNumberScalp = 777777;
@@ -275,7 +269,7 @@ void UpdateMarketConditions()
    CurrentVolatility = (CurrentATR / avgPrice) * 10000; // In pips
 
    // Determine trading session
-   int currentHour = Hour();
+   int currentHour = TimeHour(TimeCurrent());
    TradingSession = "";
    InTradingWindow = false;
 
