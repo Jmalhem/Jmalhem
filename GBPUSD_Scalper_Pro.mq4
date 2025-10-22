@@ -73,6 +73,25 @@ input double MaxDailyLossPercent = 3.0;
 input double MaxDailyProfitPercent = 5.0; // Take profit and stop for the day
 input int MagicNumberScalp = 777777;
 
+//=== ADVANCED FEATURES (PROFITABILITY BOOST) ===
+input string ___ADVANCED___ = "=== ADVANCED FEATURES ===";
+input bool UseMultiTimeframeFilter = true;
+input int MTF_Timeframe1 = 15; // M15
+input int MTF_Timeframe2 = 60; // H1
+input int MTF_Timeframe3 = 240; // H4
+input bool UseDynamicSLTP = true;
+input double DynamicSLMultiplier = 2.0; // ATR multiplier for SL
+input double DynamicTPMultiplier = 4.0; // ATR multiplier for TP
+input double MinSLPips = 6.0; // Minimum SL in pips
+input double MaxSLPips = 15.0; // Maximum SL in pips
+input bool UsePartialProfitTaking = true;
+input double PartialClosePercent = 50.0; // Close 50% at first target
+input double PartialTP1Multiplier = 1.5; // First TP at 1.5x SL
+input double PartialTP2Multiplier = 3.0; // Let rest run to 3x SL
+input bool UseCurrencyStrength = true;
+input int StrengthPeriod = 14; // Period for strength calculation
+input double MinStrengthDifference = 0.3; // Minimum strength difference
+
 //=== SCALPING DASHBOARD ===
 input string ___DASHBOARD___ = "=== DASHBOARD ===";
 input bool ShowScalpDashboard = true;
@@ -120,6 +139,19 @@ double BestScalp = 0;
 double WorstScalp = 0;
 datetime StartOfDay = 0;
 
+// Advanced Features Variables
+string MTF_Trend_M15 = "";
+string MTF_Trend_H1 = "";
+string MTF_Trend_H4 = "";
+string MTF_OverallTrend = "";
+bool MTF_TrendAligned = false;
+double GBP_Strength = 0;
+double USD_Strength = 0;
+double StrengthDifference = 0;
+bool StrengthConfirmed = false;
+int PartialPositionsToday = 0;
+int FullClosuresToday = 0;
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -153,6 +185,13 @@ int OnInit()
 
    Print("Initialization successful!");
    Print("Trading Sessions: London=", TradeLondonSession, " NY=", TradeNYSession, " Asian=", TradeAsianSession);
+
+   // Print Advanced Features Status
+   Print("=== ADVANCED FEATURES ===");
+   Print("Multi-Timeframe Filter: ", UseMultiTimeframeFilter ? "Enabled" : "Disabled");
+   Print("Dynamic SL/TP: ", UseDynamicSLTP ? "Enabled" : "Disabled");
+   Print("Partial Profit Taking: ", UsePartialProfitTaking ? "Enabled" : "Disabled");
+   Print("Currency Strength Filter: ", UseCurrencyStrength ? "Enabled" : "Disabled");
 
    return(INIT_SUCCEEDED);
 }
@@ -315,6 +354,12 @@ void AnalyzeScalpingOpportunity()
 
    // Determine market condition
    DetermineMarketCondition();
+
+   // ADVANCED FEATURE 1: Multi-Timeframe Analysis
+   AnalyzeMultiTimeframeTrend();
+
+   // ADVANCED FEATURE 2: Currency Strength
+   CalculateCurrencyStrength();
 }
 
 void CalculateDynamicLevels()
@@ -404,6 +449,128 @@ void DetermineMarketCondition()
 }
 
 //+------------------------------------------------------------------+
+//| FEATURE 1: Multi-Timeframe Trend Filter                        |
+//+------------------------------------------------------------------+
+void AnalyzeMultiTimeframeTrend()
+{
+   if(!UseMultiTimeframeFilter)
+   {
+      MTF_TrendAligned = true; // Allow all trades if disabled
+      MTF_OverallTrend = "DISABLED";
+      return;
+   }
+
+   // Analyze M15
+   double m15_ema_fast = iMA(Symbol(), MTF_Timeframe1, FastEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double m15_ema_slow = iMA(Symbol(), MTF_Timeframe1, SlowEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double m15_close = iClose(Symbol(), MTF_Timeframe1, 1);
+
+   if(m15_close > m15_ema_fast && m15_ema_fast > m15_ema_slow)
+      MTF_Trend_M15 = "BULLISH";
+   else if(m15_close < m15_ema_fast && m15_ema_fast < m15_ema_slow)
+      MTF_Trend_M15 = "BEARISH";
+   else
+      MTF_Trend_M15 = "NEUTRAL";
+
+   // Analyze H1
+   double h1_ema_fast = iMA(Symbol(), MTF_Timeframe2, FastEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double h1_ema_slow = iMA(Symbol(), MTF_Timeframe2, SlowEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double h1_close = iClose(Symbol(), MTF_Timeframe2, 1);
+
+   if(h1_close > h1_ema_fast && h1_ema_fast > h1_ema_slow)
+      MTF_Trend_H1 = "BULLISH";
+   else if(h1_close < h1_ema_fast && h1_ema_fast < h1_ema_slow)
+      MTF_Trend_H1 = "BEARISH";
+   else
+      MTF_Trend_H1 = "NEUTRAL";
+
+   // Analyze H4
+   double h4_ema_fast = iMA(Symbol(), MTF_Timeframe3, FastEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double h4_ema_slow = iMA(Symbol(), MTF_Timeframe3, SlowEMA, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double h4_close = iClose(Symbol(), MTF_Timeframe3, 1);
+
+   if(h4_close > h4_ema_fast && h4_ema_fast > h4_ema_slow)
+      MTF_Trend_H4 = "BULLISH";
+   else if(h4_close < h4_ema_fast && h4_ema_fast < h4_ema_slow)
+      MTF_Trend_H4 = "BEARISH";
+   else
+      MTF_Trend_H4 = "NEUTRAL";
+
+   // Determine overall trend (H1 and H4 must align)
+   if(MTF_Trend_H1 == "BULLISH" && MTF_Trend_H4 == "BULLISH")
+   {
+      MTF_OverallTrend = "BULLISH";
+      MTF_TrendAligned = true;
+   }
+   else if(MTF_Trend_H1 == "BEARISH" && MTF_Trend_H4 == "BEARISH")
+   {
+      MTF_OverallTrend = "BEARISH";
+      MTF_TrendAligned = true;
+   }
+   else
+   {
+      MTF_OverallTrend = "MIXED";
+      MTF_TrendAligned = false; // Don't trade if higher timeframes are mixed
+   }
+}
+
+//+------------------------------------------------------------------+
+//| FEATURE 2: Currency Strength/Correlation Filter                |
+//+------------------------------------------------------------------+
+void CalculateCurrencyStrength()
+{
+   if(!UseCurrencyStrength)
+   {
+      StrengthConfirmed = true; // Allow all trades if disabled
+      GBP_Strength = 0;
+      USD_Strength = 0;
+      StrengthDifference = 0;
+      return;
+   }
+
+   // Calculate GBP strength using GBP/USD and GBP/JPY
+   double gbpusd_change = 0;
+   double gbpjpy_change = 0;
+
+   // GBP/USD change
+   double gbpusd_current = iClose(Symbol(), 0, 1);
+   double gbpusd_previous = iClose(Symbol(), 0, StrengthPeriod);
+   if(gbpusd_previous != 0)
+      gbpusd_change = ((gbpusd_current - gbpusd_previous) / gbpusd_previous) * 100;
+
+   // GBP/JPY change (if available)
+   double gbpjpy_current = iClose("GBPJPY", 0, 1);
+   double gbpjpy_previous = iClose("GBPJPY", 0, StrengthPeriod);
+   if(gbpjpy_previous != 0)
+      gbpjpy_change = ((gbpjpy_current - gbpjpy_previous) / gbpjpy_previous) * 100;
+
+   // Average GBP strength
+   if(gbpjpy_current > 0) // If GBPJPY is available
+      GBP_Strength = (gbpusd_change + gbpjpy_change) / 2;
+   else
+      GBP_Strength = gbpusd_change;
+
+   // Calculate USD strength using EUR/USD
+   double eurusd_change = 0;
+   double eurusd_current = iClose("EURUSD", 0, 1);
+   double eurusd_previous = iClose("EURUSD", 0, StrengthPeriod);
+   if(eurusd_previous != 0)
+      eurusd_change = ((eurusd_current - eurusd_previous) / eurusd_previous) * 100;
+
+   // USD strength is inverse of EUR/USD
+   USD_Strength = -eurusd_change;
+
+   // Calculate strength difference
+   StrengthDifference = GBP_Strength - USD_Strength;
+
+   // Confirm if strength difference is significant
+   if(MathAbs(StrengthDifference) >= MinStrengthDifference)
+      StrengthConfirmed = true;
+   else
+      StrengthConfirmed = false;
+}
+
+//+------------------------------------------------------------------+
 //| Risk validation                                                 |
 //+------------------------------------------------------------------+
 bool ValidateRiskParameters()
@@ -486,6 +653,20 @@ bool ValidateRiskParameters()
       return false;
    }
 
+   // ADVANCED FILTER: Multi-Timeframe Trend Alignment
+   if(UseMultiTimeframeFilter && !MTF_TrendAligned)
+   {
+      CurrentSignal = "MTF TREND NOT ALIGNED";
+      return false;
+   }
+
+   // ADVANCED FILTER: Currency Strength Confirmation
+   if(UseCurrencyStrength && !StrengthConfirmed)
+   {
+      CurrentSignal = "CURRENCY STRENGTH WEAK";
+      return false;
+   }
+
    return true;
 }
 
@@ -531,6 +712,14 @@ void ExecutePriceActionScalp()
    if(lowerWick > body * 2 && lowerWick > upperWick &&
       Close[1] > Open[1] && Bid <= DynamicSupport + (10 * Point))
    {
+      // MTF Filter: Only buy if MTF trend is bullish or disabled
+      if(UseMultiTimeframeFilter && MTF_OverallTrend != "BULLISH" && MTF_OverallTrend != "DISABLED")
+         return;
+
+      // Currency Strength Filter: Ensure GBP is stronger than USD for buys
+      if(UseCurrencyStrength && StrengthDifference < 0)
+         return;
+
       if(!HasLongPosition())
       {
          ExecuteScalp(OP_BUY, "Price Action Bull");
@@ -542,6 +731,14 @@ void ExecutePriceActionScalp()
    if(upperWick > body * 2 && upperWick > lowerWick &&
       Close[1] < Open[1] && Ask >= DynamicResistance - (10 * Point))
    {
+      // MTF Filter: Only sell if MTF trend is bearish or disabled
+      if(UseMultiTimeframeFilter && MTF_OverallTrend != "BEARISH" && MTF_OverallTrend != "DISABLED")
+         return;
+
+      // Currency Strength Filter: Ensure USD is stronger than GBP for sells
+      if(UseCurrencyStrength && StrengthDifference > 0)
+         return;
+
       if(!HasShortPosition())
       {
          ExecuteScalp(OP_SELL, "Price Action Bear");
@@ -728,6 +925,21 @@ double CalculateStopLoss(int orderType, double price)
    double sl = 0;
    double stopDistance = StopLossPips * 10 * Point;
 
+   // FEATURE 3: Dynamic SL based on ATR
+   if(UseDynamicSLTP)
+   {
+      double atr = iATR(Symbol(), 0, ATR_Period, 1);
+      double atrPips = (atr / Point) / 10; // Convert to pips
+
+      // Calculate dynamic SL in pips
+      double dynamicSLPips = atrPips * DynamicSLMultiplier;
+
+      // Apply min/max limits
+      dynamicSLPips = MathMax(MinSLPips, MathMin(MaxSLPips, dynamicSLPips));
+
+      stopDistance = dynamicSLPips * 10 * Point;
+   }
+
    if(orderType == OP_BUY)
       sl = price - stopDistance;
    else
@@ -740,6 +952,21 @@ double CalculateTakeProfit(int orderType, double price)
 {
    double tp = 0;
    double tpDistance = TakeProfitPips * 10 * Point;
+
+   // FEATURE 3: Dynamic TP based on ATR
+   if(UseDynamicSLTP)
+   {
+      double atr = iATR(Symbol(), 0, ATR_Period, 1);
+      double atrPips = (atr / Point) / 10; // Convert to pips
+
+      // Calculate dynamic SL and TP in pips
+      double dynamicSLPips = atrPips * DynamicSLMultiplier;
+      dynamicSLPips = MathMax(MinSLPips, MathMin(MaxSLPips, dynamicSLPips));
+
+      double dynamicTPPips = dynamicSLPips * (DynamicTPMultiplier / DynamicSLMultiplier);
+
+      tpDistance = dynamicTPPips * 10 * Point;
+   }
 
    if(orderType == OP_BUY)
       tp = price + tpDistance;
@@ -758,6 +985,10 @@ void ManageScalpPositions()
    {
       if(OrderSelect(i, SELECT_BY_POS) && OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumberScalp)
       {
+         // FEATURE 4: Partial Profit Taking
+         if(UsePartialProfitTaking)
+            ApplyPartialProfitTaking();
+
          // Apply trailing stop
          if(UseTrailingStop)
             ApplyTrailingStop();
@@ -768,6 +999,68 @@ void ManageScalpPositions()
 
          // Check for quick exit conditions
          CheckQuickExit();
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| FEATURE 4: Partial Profit Taking System                        |
+//+------------------------------------------------------------------+
+void ApplyPartialProfitTaking()
+{
+   double currentPrice = (OrderType() == OP_BUY) ? Bid : Ask;
+   double openPrice = OrderOpenPrice();
+   double currentSL = OrderStopLoss();
+   string orderComment = OrderComment();
+
+   // Check if this is already a partial position (contains "PARTIAL")
+   if(StringFind(orderComment, "PARTIAL") >= 0)
+      return; // Already partially closed
+
+   // Calculate profit in pips
+   double profitPips = 0;
+   if(OrderType() == OP_BUY)
+      profitPips = (currentPrice - openPrice) / Point / 10;
+   else
+      profitPips = (openPrice - currentPrice) / Point / 10;
+
+   // Calculate SL distance in pips for target calculation
+   double slDistance = MathAbs(openPrice - currentSL) / Point / 10;
+   if(slDistance == 0) slDistance = StopLossPips; // Fallback
+
+   // Calculate TP1 target
+   double tp1Target = slDistance * PartialTP1Multiplier;
+
+   // Check if we've reached TP1
+   if(profitPips >= tp1Target)
+   {
+      double originalLots = OrderLots();
+      double closePercent = PartialClosePercent / 100.0;
+      double lotsToClose = originalLots * closePercent;
+
+      // Round to lot step
+      double lotStep = MarketInfo(Symbol(), MODE_LOTSTEP);
+      if(lotStep > 0)
+         lotsToClose = MathFloor(lotsToClose / lotStep) * lotStep;
+
+      double minLot = MarketInfo(Symbol(), MODE_MINLOT);
+      if(lotsToClose >= minLot && (originalLots - lotsToClose) >= minLot)
+      {
+         // Close partial position
+         bool closed = OrderClose(OrderTicket(), lotsToClose, currentPrice, 3, ProfitColorScalp);
+
+         if(closed)
+         {
+            PartialPositionsToday++;
+            Print("Partial profit taken: ", lotsToClose, " lots at ", profitPips, " pips profit");
+
+            // Modify remaining position comment to mark as partial
+            int remainingTicket = OrderTicket();
+            if(OrderSelect(remainingTicket, SELECT_BY_TICKET))
+            {
+               OrderModify(OrderTicket(), openPrice, currentSL, 0, 0); // Remove TP, let it trail
+            }
+         }
       }
    }
 }
@@ -904,6 +1197,8 @@ void ResetDailyCounters()
 {
    ScalpsToday = 0;
    DailyPnL = 0;
+   PartialPositionsToday = 0;
+   FullClosuresToday = 0;
    StartOfDay = TimeCurrent();
    Print("Daily counters reset for new trading day");
 }
@@ -1027,7 +1322,7 @@ void CreateScalpDashboard()
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_XDISTANCE, DashX);
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_YDISTANCE, DashY);
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_XSIZE, 420);
-   ObjectSetInteger(0, "Scalp_BG", OBJPROP_YSIZE, 480);
+   ObjectSetInteger(0, "Scalp_BG", OBJPROP_YSIZE, 580); // Increased height for new features
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_BGCOLOR, clrBlack);
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_BORDER_TYPE, BORDER_FLAT);
    ObjectSetInteger(0, "Scalp_BG", OBJPROP_COLOR, clrGold);
@@ -1053,7 +1348,16 @@ void CreateScalpDashboard()
    CreateDashLabel("Scalp_WinRate", "", DashX + 10, DashY + 375, clrWhite, 9);
    CreateDashLabel("Scalp_ProfitFactor", "", DashX + 10, DashY + 395, clrWhite, 9);
    CreateDashLabel("Scalp_Positions", "", DashX + 10, DashY + 420, clrWhite, 9);
-   CreateDashLabel("Scalp_Time", "", DashX + 10, DashY + 440, clrWhite, 9);
+
+   // ADVANCED FEATURES SECTION
+   CreateDashLabel("Scalp_AdvTitle", "=== ADVANCED FEATURES ===", DashX + 10, DashY + 445, clrGold, 10);
+   CreateDashLabel("Scalp_MTF", "", DashX + 10, DashY + 465, clrWhite, 9);
+   CreateDashLabel("Scalp_MTF_Details", "", DashX + 10, DashY + 485, clrWhite, 8);
+   CreateDashLabel("Scalp_Strength", "", DashX + 10, DashY + 505, clrWhite, 9);
+   CreateDashLabel("Scalp_PartialStats", "", DashX + 10, DashY + 525, clrWhite, 9);
+   CreateDashLabel("Scalp_DynamicSL", "", DashX + 10, DashY + 545, clrWhite, 9);
+
+   CreateDashLabel("Scalp_Time", "", DashX + 10, DashY + 560, clrWhite, 9);
 }
 
 void CreateDashLabel(string name, string text, int x, int y, color clr, int size)
@@ -1138,6 +1442,43 @@ void UpdateScalpDashboard()
    // Positions
    ObjectSetText("Scalp_Positions", "Open Positions: " + IntegerToString(CountPositions()), 9, "Arial", clrWhite);
 
+   // ADVANCED FEATURES DISPLAY
+   // MTF Trend
+   color mtfColor = (MTF_TrendAligned) ? ProfitColorScalp : LossColorScalp;
+   if(MTF_OverallTrend == "DISABLED") mtfColor = clrGray;
+   ObjectSetText("Scalp_MTF", "MTF Trend: " + MTF_OverallTrend, 9, "Arial Bold", mtfColor);
+
+   string mtfDetails = "M15:" + MTF_Trend_M15 + " | H1:" + MTF_Trend_H1 + " | H4:" + MTF_Trend_H4;
+   ObjectSetText("Scalp_MTF_Details", mtfDetails, 8, "Arial", clrGray);
+
+   // Currency Strength
+   color strengthColor = (StrengthConfirmed) ? ProfitColorScalp : NeutralColorScalp;
+   if(!UseCurrencyStrength) strengthColor = clrGray;
+   string strengthText = "Strength: GBP=" + DoubleToStr(GBP_Strength, 2) + " USD=" + DoubleToStr(USD_Strength, 2);
+   ObjectSetText("Scalp_Strength", strengthText + " | Diff=" + DoubleToStr(StrengthDifference, 2), 9, "Arial", strengthColor);
+
+   // Partial Profit Stats
+   string partialText = "Partial Closes: " + IntegerToString(PartialPositionsToday) + " today";
+   color partialColor = (UsePartialProfitTaking) ? clrWhite : clrGray;
+   ObjectSetText("Scalp_PartialStats", partialText, 9, "Arial", partialColor);
+
+   // Dynamic SL/TP Status
+   string dynamicText = "Dynamic SL/TP: ";
+   if(UseDynamicSLTP)
+   {
+      double atr = iATR(Symbol(), 0, ATR_Period, 1);
+      double atrPips = (atr / Point) / 10;
+      double calcSL = atrPips * DynamicSLMultiplier;
+      calcSL = MathMax(MinSLPips, MathMin(MaxSLPips, calcSL));
+      dynamicText += DoubleToStr(calcSL, 1) + " pips";
+      ObjectSetText("Scalp_DynamicSL", dynamicText, 9, "Arial", ProfitColorScalp);
+   }
+   else
+   {
+      dynamicText += "Disabled";
+      ObjectSetText("Scalp_DynamicSL", dynamicText, 9, "Arial", clrGray);
+   }
+
    // Time
    ObjectSetText("Scalp_Time", "Time: " + TimeToString(TimeCurrent(), TIME_SECONDS), 9, "Arial", clrGray);
 }
@@ -1165,6 +1506,12 @@ void DeleteScalpDashboard()
    ObjectDelete("Scalp_WinRate");
    ObjectDelete("Scalp_ProfitFactor");
    ObjectDelete("Scalp_Positions");
+   ObjectDelete("Scalp_AdvTitle");
+   ObjectDelete("Scalp_MTF");
+   ObjectDelete("Scalp_MTF_Details");
+   ObjectDelete("Scalp_Strength");
+   ObjectDelete("Scalp_PartialStats");
+   ObjectDelete("Scalp_DynamicSL");
    ObjectDelete("Scalp_Time");
 }
 
